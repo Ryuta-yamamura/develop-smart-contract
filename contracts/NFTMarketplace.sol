@@ -43,7 +43,7 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
     // uint256 public buyNFTReward = 1;
 
     // マーケットアドレス所有者の販売時のパーセンテージを追加
-    uint256 ownerCommissionPercentage = 50;
+    uint256 ownerCommissionPercentage = 250;
     uint256 creatorCommissionPercentage = 100;
     uint256 sellerCommissionPercentage = 1000 - ownerCommissionPercentage - creatorCommissionPercentage;
 
@@ -75,6 +75,14 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
       uint256 value;
     }
 
+    // クリエイターのロイヤリティを設定
+    struct CreatorInfo {
+      address creator;
+      uint256 salesCount;
+      uint256 royaltyPercentage;
+    }
+
+
     // 作成されたすべてのアイテムの確認ができると
     // アイテム ID である整数が渡され、マーケット アイテムが返される。
     // マーケットアイテムを取得するには、アイテムIDのみが必要
@@ -82,6 +90,7 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
     mapping(uint256 => MarketItem) private idToMarketItem;
     mapping(uint256 => Bid) public bids;
     mapping(address => mapping(uint256 => bool)) public blacklist;
+    mapping(address => CreatorInfo) private creators;
 
 
     // 市場アイテムが作成されたときにイベントを発生させます(have an event for when a market item is created.)
@@ -106,7 +115,9 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
       uint256 indexed tokenId,
       address seller,
       address buyer,
-      uint256 price
+      address creator,
+      uint256 price,
+      uint256 royaltyPercentage
     );
 
     event Prohibited (
@@ -122,8 +133,18 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
     constructor()  ERC721("NFTs made for PhonoGraph", "PHG") {
     }
 
+    event RoyaltyIncreased (
+      address indexed creator,
+      uint256 indexed salesCount,
+      uint256 indexed royaltyPercentage
+    );
+
+
     // 販売方法の設定
     enum SaleKind { Fix, Auction }
+    // ロイヤリティの最大パーセンテージ
+    uint256 public maxRoyaltyPercentage = 150;
+
 
     // オーナーへの成果報酬を取得
     function getOwnerShare(uint256 x) private view returns(uint256) {
@@ -145,10 +166,10 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
         ownerCommissionPercentage = _ownerCommissionPercentage;
     }
 
-        /* 契約のクリエイターへの報酬率を更新 */
-    function updateCreatorCommissionPercentage(uint _creatorCommissionPercentage) public payable onlyOwner{
-
-        creatorCommissionPercentage = _creatorCommissionPercentage;
+        /* 契約のクリエイターへの最大報酬率を更新 */
+    function updatemaxRoyaltyPercentage(uint _maxRoyaltyPercentage) public payable onlyOwner{
+      require(_maxRoyaltyPercentage < ownerCommissionPercentage, "max must lower than ownerCommision");
+        maxRoyaltyPercentage = _maxRoyaltyPercentage;
     }
 
     
