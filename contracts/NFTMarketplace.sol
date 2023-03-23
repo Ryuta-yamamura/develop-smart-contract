@@ -33,9 +33,9 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
 
     // マーケットプレイスにnftをリストする手数料
     // リスト料金を請求します。
-    uint256 listingPrice = 0;
+    uint256 private listingPrice = 0;
     // 2回目移行のリスト料金を変更します。
-    uint256 secondListingPrice = 0;
+    uint256 private secondListingPrice = 5 ether;
 
     // DAOトークンの設定
     // address public daoToken = address(0);
@@ -43,9 +43,12 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
     // uint256 public buyNFTReward = 1;
 
     // マーケットアドレス所有者の販売時のパーセンテージを追加
-    uint256 ownerCommissionPercentage = 250;
-    uint256 creatorCommissionPercentage = 100;
-    uint256 sellerCommissionPercentage = 1000 - ownerCommissionPercentage - creatorCommissionPercentage;
+    uint256 private ownerFirstCommissionPercentage = 250;
+    uint256 private creatorFirstCommissionPercentage = 50;
+    uint256 private sellerCommissionPercentage = 1000 - ownerFirstCommissionPercentage - creatorFirstCommissionPercentage;
+    // ロイヤリティの最大パーセンテージ
+    uint256 private maxRoyaltyPercentage = 150;
+    
 
     struct NFTItem {
       uint256 tokenId;
@@ -63,6 +66,7 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
       uint256 price;
       uint256 reserved;
       uint256 listTime;
+      uint256 startDuration;
       uint256 duration;
       SaleKind salekind;
       bool sold;
@@ -82,7 +86,6 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
       uint256 royaltyPercentage;
     }
 
-
     // 作成されたすべてのアイテムの確認ができると
     // アイテム ID である整数が渡され、マーケット アイテムが返される。
     // マーケットアイテムを取得するには、アイテムIDのみが必要
@@ -96,18 +99,11 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
     // 市場アイテムが作成されたときにイベントを発生させます(have an event for when a market item is created.)
     //このイベントはMarketItemに一致します (this event matches the MarketItem)
     event MarketItemCreated (
-      uint256 indexed itemId,
-      address indexed nftContract,
-      uint256 indexed tokenId,
-      address seller,
-      address owner,
-      address creator,
-      uint256 price,
-      uint256 reserved,
-      uint256 listTime,
-      uint256 duration,
-      SaleKind salekind,
-      bool sold
+      MarketItem marketItem
+    );
+
+    event BidCreated (
+      Bid bid
     );
 
     event MarketItemSold (
@@ -115,9 +111,7 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
       uint256 indexed tokenId,
       address seller,
       address buyer,
-      address creator,
-      uint256 price,
-      uint256 royaltyPercentage
+      uint256 price
     );
 
     event Prohibited (
@@ -129,57 +123,51 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
       uint256 indexed tokenId
     );
 
-    // DaoTokenについては現在開発中のため、後でセッティングを実行
-    constructor()  ERC721("NFTs made for PhonoGraph", "PHG") {
-    }
-
     event RoyaltyIncreased (
       address indexed creator,
       uint256 indexed salesCount,
       uint256 indexed royaltyPercentage
     );
 
+    // DaoTokenについては現在開発中のため、後でセッティングを実行
+    constructor()  ERC721("NFTs made for PhonoGraph", "PHG") {
+    }
 
     // 販売方法の設定
     enum SaleKind { Fix, Auction }
-    // ロイヤリティの最大パーセンテージ
-    uint256 public maxRoyaltyPercentage = 150;
 
 
-    // オーナーへの成果報酬を取得
-    function getOwnerShare(uint256 x) private view returns(uint256) {
-        return (x / 1000) * ownerCommissionPercentage;
-    }
-    // クリエイターへの成果報酬を取得
-    function getCreatorShare(uint256 x) private view returns(uint256) {
-      return (x / 1000) * creatorCommissionPercentage;
-    }
-    // 販売者への成果報酬を取得
-    function getSellerShare(uint256 x) private view returns(uint256) {
-      return (x / 1000) * sellerCommissionPercentage;
+    // 成果報酬を取得
+    function getShare(uint256 x, uint256 y) private pure returns(uint256) {
+        return x * ( y / 1000 );
     }
 
 
     /* 契約のオーナーへの報酬率を更新 */
-    function updateOwnerCommissionPercentage(uint _ownerCommissionPercentage) public payable onlyOwner{
+    function updateOwnerFirstCommissionPercentage(uint _ownerFirstCommissionPercentage) public payable onlyOwner{
 
-        ownerCommissionPercentage = _ownerCommissionPercentage;
+        ownerFirstCommissionPercentage = _ownerFirstCommissionPercentage;
+    }
+
+    function updateCreatorFirstCommissionPercentage(uint _creatorFirstCommissionPercentage) public payable onlyOwner{
+
+        creatorFirstCommissionPercentage = _creatorFirstCommissionPercentage;
     }
 
         /* 契約のクリエイターへの最大報酬率を更新 */
-    function updatemaxRoyaltyPercentage(uint _maxRoyaltyPercentage) public payable onlyOwner{
-      require(_maxRoyaltyPercentage < ownerCommissionPercentage, "max must lower than ownerCommision");
+    function updateMaxRoyaltyPercentage(uint _maxRoyaltyPercentage) public payable onlyOwner{
+      require(_maxRoyaltyPercentage < ownerFirstCommissionPercentage, "max must lower than ownerCommision");
         maxRoyaltyPercentage = _maxRoyaltyPercentage;
     }
 
     
     /* 契約のオーナーへの報酬率を取得*/
-    function getOwnerCommissionPercentage() public view returns (uint256) {
-      return ownerCommissionPercentage;
+    function getOwnerFirstCommissionPercentage() public view returns (uint256) {
+      return ownerFirstCommissionPercentage;
     }
     /* 契約のクリエイターへの報酬率を取得*/
-    function getCreatorCommissionPercentage() public view returns (uint256) {
-      return creatorCommissionPercentage;
+    function getCreatorFirstCommissionPercentage() public view returns (uint256) {
+      return creatorFirstCommissionPercentage;
     }
 
     /* 契約のリスト価格を更新 */
@@ -252,6 +240,11 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
             false
         );
 
+        // 作成者が登録されていない場合は、デフォルト値で新しい作成者を登録します
+        if (creators[msg.sender].creator == address(0)) {
+            creators[msg.sender] = CreatorInfo(msg.sender, 0, 0);
+        }
+
         setApprovalForAll(address(this), true);
         return tokenId;
     }
@@ -267,6 +260,11 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
             payable(msg.sender),
             false
         );
+
+        // 作成者が登録されていない場合は、デフォルト値で新しい作成者を登録します
+        if (creators[msg.sender].creator == address(0)) {
+            creators[msg.sender] = CreatorInfo(msg.sender, 0, 0);
+        }
         return tokenId;
     }
 
@@ -277,7 +275,8 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
       SaleKind salekind,
       uint256 price,
       uint256 reserved,
-      uint256 duration
+      uint256 duration,
+      uint256 startDuration
     ) public payable nonReentrant {
         // 特定の条件が必要です。この場合、価格は 0 よりも大きくなります
       require(!blacklist[nftContract][0], "the whole nft contract is prohibited");
@@ -305,6 +304,7 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
         price,
         reservedtmp,
         block.timestamp,
+        startDuration,
         duration,
         salekind,
         false
@@ -321,18 +321,7 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
         // イベントの発火
       {
         emit MarketItemCreated(
-          _itemIds.current(),
-          nftContract,
-          tokenId,
-          msg.sender,
-          address(this),
-          msg.sender,
-          price,
-          reservedtmp,
-          block.timestamp,
-          duration,
-          salekind,
-          false
+          idToMarketItem[_itemIds.current()]
         );
       }
       //販売者にDAOトークンを発行
@@ -346,7 +335,8 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
       SaleKind salekind,
       uint256 price,
       uint256 reserved,
-      uint256 duration
+      uint256 duration,
+      uint256 startDuration
     ) public payable nonReentrant {
         // 特定の条件が必要です。この場合、価格は 0 よりも大きくなります
       require(price > 0, "price needed");
@@ -364,6 +354,12 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
           payable(msg.sender),
           true
       );
+
+      // 作成者が登録されていない場合は、デフォルト値で新しい作成者を登録します
+      if (creators[msg.sender].creator == address(0)) {
+          creators[msg.sender] = CreatorInfo(msg.sender, 0, 0);
+      }
+
       setApprovalForAll(address(this), true);
       _itemIds.increment();
 
@@ -379,6 +375,7 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
           price,
           reservedtmp,
           block.timestamp,
+          startDuration,
           duration,
           salekind,
           false
@@ -389,18 +386,7 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
       IERC721(nftContract).transferFrom(msg.sender, address(this), _tokenIds.current());
         // イベントの発火
         emit MarketItemCreated(
-          _itemIds.current(),
-          nftContract,
-          _tokenIds.current(),
-          msg.sender,
-          address(this),
-          msg.sender,
-          price,
-          reservedtmp,
-          block.timestamp,
-          duration,
-          salekind,
-          false
+          idToMarketItem[_itemIds.current()]
         );
       }
       //販売者にDAOトークンを発行
@@ -416,7 +402,8 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
       SaleKind salekind,
       uint256 price,
       uint256 reserved,
-      uint256 duration
+      uint256 duration,
+      uint256 startDuration
     ) public payable nonReentrant{
       require(!blacklist[nftContract][0], "the whole nft contract is prohibited");
       require(!blacklist[nftContract][tokenId], "the nft is prohibited");
@@ -430,19 +417,18 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
       require(msg.value == secondListingPrice, "Price must be equal to listing price");
 
       // 販売方法が定額の場合は金額、オークションの場合は予定金額をセット
-      uint256 reservedtmp = salekind == SaleKind.Fix ? price : reserved;
+      uint256 reservedtmp = salekind == SaleKind.Fix ? price : reserved; //9
 
       // マーケットアイテム情報の更新
-      {
       idToMarketItem[itemId].seller = payable(msg.sender);
       idToMarketItem[itemId].owner = payable(address(this));
       idToMarketItem[itemId].price = price;
       idToMarketItem[itemId].reserved = reservedtmp;
       idToMarketItem[itemId].listTime = block.timestamp;
+      idToMarketItem[itemId].startDuration = startDuration;
       idToMarketItem[itemId].duration = duration;
       idToMarketItem[itemId].salekind = salekind;
       idToMarketItem[itemId].sold = false;
-      }
       _itemsSold.decrement();
 
       _asyncTransfer(owner(),msg.value);
@@ -453,24 +439,10 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
       // itemIdの入札情報を削除
       delete bids[itemId];
 
-
             // イベントの発火
-     {
-        emit MarketItemCreated(
-          itemId,
-          nftContract,
-          tokenId,
-          msg.sender,
-          address(this),
-          idToMarketItem[itemId].creator,
-          price,
-          reservedtmp,
-          block.timestamp,
-          duration,
-          salekind,
-          false
-        );
-      }
+      emit MarketItemCreated(
+        idToMarketItem[itemId]
+      );
     }
 
     /* マーケットプレイス アイテムの販売を作成します(Creates the sale of a marketplace item) */
@@ -481,7 +453,8 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
       uint256 price = idToMarketItem[itemId].price;
       uint256 tokenId = idToMarketItem[itemId].tokenId;
       address nftContract = idToMarketItem[itemId].nftContract;
-      uint256 endtime = idToMarketItem[itemId].listTime + idToMarketItem[itemId].duration * 60;
+      uint256 starttime = idToMarketItem[itemId].listTime + idToMarketItem[itemId].startDuration;
+      uint256 endtime = idToMarketItem[itemId].listTime + idToMarketItem[itemId].startDuration + idToMarketItem[itemId].duration;
       uint256 reserved = idToMarketItem[itemId].reserved;
       // クリエイターのaddress
       address payable creator = idToMarketItem[itemId].creator;
@@ -491,17 +464,19 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
       require(!blacklist[nftContract][0], "the whole nft contract is prohibited");
       require(!blacklist[nftContract][tokenId], "the nft is prohibited");
       require(nftContract != address(0), "no such item");
-      require(block.timestamp >= idToMarketItem[itemId].listTime, "sale not yet start");
+      require(block.timestamp >= starttime, "sale not yet start");
       require(idToMarketItem[itemId].owner == address(this), "had sold");
 
       // 定額販売の決済方法について確認
       if(SaleKind.Fix == idToMarketItem[itemId].salekind){
         require(msg.value == price, "price not right");
-        require(block.timestamp < endtime , "sale had ended");
         // 金額の分配を実施
-        _asyncTransfer(owner(), getOwnerShare(msg.value));
-        _asyncTransfer(creator, getCreatorShare(msg.value));
-        _asyncTransfer(seller, getSellerShare(msg.value));
+        // マーケットプレイスの手数料
+        _asyncTransfer(owner(), getShare(msg.value, ownerFirstCommissionPercentage - creators[creator].royaltyPercentage));
+        // クリエイター報酬
+        _asyncTransfer(creator, getShare(msg.value, creatorFirstCommissionPercentage + creators[creator].royaltyPercentage));
+        // 販売者への還元
+        _asyncTransfer(seller, getShare(msg.value, sellerCommissionPercentage));
         withdrawPayments(payable(owner()));
         withdrawPayments(creator);
         withdrawPayments(seller);
@@ -511,6 +486,20 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
         idToMarketItem[itemId].seller = payable(address(0));
         _itemsSold.increment();
 
+        // 販売者が製作者の場合にカウントとロイヤリティを追加する
+        if (seller == creator) {
+          creators[creator].salesCount += 1;
+          if (creators[creator].royaltyPercentage < maxRoyaltyPercentage - creatorFirstCommissionPercentage) {
+              creators[creator].royaltyPercentage += 10;
+          }
+         // イベントの発火
+          emit RoyaltyIncreased (
+            creator,
+            creators[creator].salesCount,
+            creators[creator].royaltyPercentage
+          );
+        }
+
         // イベントの発火
         emit MarketItemSold(
           nftContract,
@@ -519,10 +508,6 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
           idToMarketItem[itemId].owner,
           price
         );
-
-        
-
-        
         // NFT の所有権を売り手から買い手に譲渡します。
         IERC721(nftContract).transferFrom(address(this), msg.sender, itemId);
         //distrubute dao token to buyer
@@ -542,12 +527,19 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
 
           bids[itemId] = Bid(block.timestamp, msg.sender, msg.value);
 
+          emit BidCreated (
+            bids[itemId]
+          );
+
           // 入札最大金額より多くの金額を設定した場合、即時購入を実施
           if(reserved != 0 && msg.value >= reserved){
             // 金額の分配を実施
-            _asyncTransfer(owner(), getOwnerShare(reserved));
-            _asyncTransfer(creator, getCreatorShare(reserved));
-            _asyncTransfer(seller, getSellerShare(reserved));
+            // マーケットプレイスの手数料
+            _asyncTransfer(owner(), getShare(reserved, ownerFirstCommissionPercentage - creators[creator].royaltyPercentage));
+            // クリエイター報酬
+            _asyncTransfer(creator, getShare(reserved, creatorFirstCommissionPercentage + creators[creator].royaltyPercentage));
+            // 販売者への還元
+            _asyncTransfer(seller, getShare(reserved, sellerCommissionPercentage));
             withdrawPayments(payable(owner()));
             withdrawPayments(creator);
             withdrawPayments(seller);
@@ -571,7 +563,22 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
             if(msg.value-reserved > 0){
               payable(msg.sender).transfer(msg.value-reserved);
             }
-            bids[itemId] = Bid(block.timestamp, msg.sender, reserved);
+            // bids[itemId] = Bid(block.timestamp, msg.sender, reserved);
+
+            // 販売者が製作者の場合にカウントとロイヤリティを追加する
+            if (seller == creator) {
+              creators[creator].salesCount += 1;
+              if (creators[creator].royaltyPercentage < maxRoyaltyPercentage - creatorFirstCommissionPercentage) {
+                  creators[creator].royaltyPercentage += 10;
+              }
+
+              // イベントの発火
+              emit RoyaltyIncreased (
+                creator,
+                creators[creator].salesCount,
+                creators[creator].royaltyPercentage
+              );
+            }
             // NFT の所有権を売り手から買い手に譲渡します。
             IERC721(nftContract).transferFrom(address(this), msg.sender, tokenId);
           }
@@ -581,9 +588,12 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
             // ここは販売者じゃなくても大丈夫かも
             require(msg.sender == seller, "Can only be operated by sellers");
             // 金額の分配を実施
-            _asyncTransfer(owner(), getOwnerShare(bids[itemId].value));
-            _asyncTransfer(creator, getCreatorShare(bids[itemId].value));
-            _asyncTransfer(seller, getSellerShare(bids[itemId].value));
+            // マーケットプレイスの手数料
+            _asyncTransfer(owner(), getShare(bids[itemId].value, ownerFirstCommissionPercentage - creators[creator].royaltyPercentage));
+            // クリエイター報酬
+            _asyncTransfer(creator, getShare(bids[itemId].value, creatorFirstCommissionPercentage + creators[creator].royaltyPercentage));
+            // 販売者への還元
+            _asyncTransfer(seller, getShare(bids[itemId].value, sellerCommissionPercentage));
             withdrawPayments(payable(owner()));
             withdrawPayments(creator);
             withdrawPayments(seller);
@@ -592,6 +602,20 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
             idToMarketItem[itemId].sold = true;
             idToMarketItem[itemId].seller = payable(address(0));
             _itemsSold.increment();
+
+            // 販売者が製作者の場合にカウントとロイヤリティを追加する
+            if (seller == creator) {
+              creators[creator].salesCount += 1;
+              if (creators[creator].royaltyPercentage < maxRoyaltyPercentage - creatorFirstCommissionPercentage) {
+                  creators[creator].royaltyPercentage += 10;
+              }
+              // イベントの発火
+              emit RoyaltyIncreased (
+                creator,
+                creators[creator].salesCount,
+                creators[creator].royaltyPercentage
+              );
+            }
 
             emit MarketItemSold(
               nftContract,
@@ -726,5 +750,50 @@ contract NFTMarketplace is ERC721URIStorage, PullPayment, Ownable, ReentrancyGua
       
       return items;
     }
+
+    /* クリエイターアドレスからNFT作品を取得*/
+    function fetchItemsByAdd(address add, uint256 index) public view returns (MarketItem[] memory) {
+      // index:1はseller情報の取得
+      // それ以外はcreator情報の取得
+      uint totalItemCount = _itemIds.current();
+      uint itemCount = 0;
+      uint currentIndex = 0;
+      if(index == 1) {
+        for (uint i = 0; i < totalItemCount; i++) {
+          if (idToMarketItem[i + 1].seller == add) {
+            itemCount += 1;
+          }
+        }
+      } else {
+        for (uint i = 0; i < totalItemCount; i++) {
+          if (idToMarketItem[i + 1].creator == add) {
+            itemCount += 1;
+          }
+        }
+      }
+      MarketItem[] memory items = new MarketItem[](itemCount);
+      
+      if(index == 1) {
+        for (uint i = 0; i < totalItemCount; i++) {
+          if (idToMarketItem[i + 1].seller == add) {
+            uint currentId = idToMarketItem[i + 1].itemId;
+            MarketItem storage currentItem = idToMarketItem[currentId];
+            items[currentIndex] = currentItem;
+            currentIndex += 1;
+          }
+        }
+      } else {
+        for (uint i = 0; i < totalItemCount; i++) {
+          if (idToMarketItem[i + 1].creator == add) {
+            uint currentId = idToMarketItem[i + 1].itemId;
+            MarketItem storage currentItem = idToMarketItem[currentId];
+            items[currentIndex] = currentItem;
+            currentIndex += 1;
+          }
+        }
+      }
+      return items;
+    }
+
 
 }
